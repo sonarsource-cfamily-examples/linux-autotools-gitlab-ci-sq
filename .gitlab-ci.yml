@@ -1,0 +1,69 @@
+image: gcc
+
+variables:
+  SONAR_SERVER_URL: "https://sonarcloud.io" 
+  SONAR_SCANNER_VERSION: 4.6.1.2450 # Find the latest version in the "Linux" link on this page:
+                                    # https://sonarcloud.io/documentation/analysis/scan/sonarscanner/ 
+  BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory # Directory where build-wrapper output will be placed
+  
+  SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"  # Defines the location of the analysis task cache
+  GIT_DEPTH: "0"  # Tells git to fetch all the branches of the project, required by the analysis task
+  # note that SONAR_TOKEN is transmitted to the environment through Gitlab CI
+
+get-sonar-binaries:
+  # this job download and unpacks the build-wrapper and the sonar-scanner
+  # in this example it is done for every build.
+  # This can be optimized by caching the files or better, by including them, in the build docker image.
+  stage: .pre
+  script:
+    # Download sonar-scanner
+    - curl -sSLo sonar-scanner.zip "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux.zip"
+    - unzip -o sonar-scanner.zip 
+    - mv sonar-scanner-${SONAR_SCANNER_VERSION}-linux sonar-scanner
+    # Download build-wrapper
+    - curl -sSLo build-wrapper.zip "${SONAR_SERVER_URL}/static/cpp/build-wrapper-linux-x86.zip" 
+    - unzip -o build-wrapper.zip
+    - mv build-wrapper-linux-x86 build-wrapper
+  cache:
+    policy: push
+    key: "${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - build-wrapper/ # to share the build-wrapper between jobs
+      - sonar-scanner/ # to share the sonar-scanner between jobs
+
+build:
+  stage: build
+  # install the necessary build tools when needed
+  before_script:
+    - apt update && apt -y install autotools-dev
+  script:
+    # prepare the build tree
+    - autoreconf --install
+    - ./configure
+    # run the build inside the build wrapper
+    - build-wrapper/build-wrapper-linux-x86-64 --out-dir "${BUILD_WRAPPER_OUT_DIR}" make clean all
+  artifacts:
+    paths:
+      - src/sonar_scanner_example
+  cache:
+    policy: pull-push
+    key: "${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - build-wrapper/
+      - sonar-scanner/
+      - "${BUILD_WRAPPER_OUT_DIR}"
+
+sonarcloud-check:
+  stage: .post
+  cache:
+    policy: pull
+    key: "${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - sonar-scanner/
+      - "${BUILD_WRAPPER_OUT_DIR}"
+  script:
+    - sonar-scanner/bin/sonar-scanner --define sonar.host.url="${SONAR_SERVER_URL}" --define sonar.cfamily.build-wrapper-output="${BUILD_WRAPPER_OUT_DIR}"
+  only:
+    - merge_requests
+    - main
+    - develop
